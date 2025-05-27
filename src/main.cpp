@@ -31,7 +31,7 @@ static int receive_image_data_from_uart(float* buffer, size_t float_count) {
     printk("Waiting for %zu bytes of image data via UART (expected %zu floats)...\n", bytes_to_receive, float_count);
 
     // Basic timeout mechanism
-    int60_t start_time = k_uptime_get();
+    int64_t start_time = k_uptime_get();
     // Adjust timeout as needed. For 784 floats (3136 bytes), even at 9600 baud, 
     // this should be a few seconds. Add buffer.
     int64_t timeout_ms = 15000; // 15 seconds timeout 
@@ -124,10 +124,10 @@ int main() {
        // Print label and value, ensuring label is not null if possible
        // (The Edge Impulse SDK usually provides valid labels for active classifications)
        if (classification.label) { // Check if label pointer is not null
-            printk("  %s: %.5f\n", classification.label, classification.value);
+            printk("  %s: %.5f\n", classification.label, (double)classification.value);
        } else {
             // Fallback if label is null for some reason, print index
-            printk("  Label %u: %.5f\n", i, classification.value);
+            printk("  Label %u: %.5f\n", i, (double)classification.value);
        }
    }
 
@@ -138,12 +138,12 @@ int main() {
            ei_impulse_result_bounding_box_t bb = result.bounding_boxes[i];
            if (bb.value == 0) continue; 
            printk("  Object: '%s' (%.2f) [x=%d, y=%d, w=%d, h=%d]\n",
-                  bb.label, bb.value, bb.x, bb.y, bb.width, bb.height);
+                  bb.label, (double)bb.value, bb.x, bb.y, bb.width, bb.height);
        }
    }
 
 #if EI_CLASSIFIER_HAS_ANOMALY == 1
-   printk("Anomaly score: %.3f\n", result.anomaly);
+   printk("Anomaly score: %.3f\n", (double)result.anomaly);
 #endif
    // Add a clear end-of-result marker and a newline for better readability
    printk("--- End of Classification ---\n\n");
