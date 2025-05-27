@@ -4,78 +4,73 @@
 #else
 #include <zephyr.h>
 #endif
-#include <zephyr/drivers/uart.h>
-#include <zephyr/device.h>
-#include <stdio.h>
-#include <string.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/clock_control/nrf_clock_control.h>
+#include "edge-impulse-sdk/classifier/ei_run_classifier.h"
+#include "edge-impulse-sdk/dsp/numpy.hpp"
+#include <hal/nrf_clock.h>
 
-#define START_MARKER_1 0xAA
-#define START_MARKER_2 0x55
-#define IMAGE_WIDTH 200
-#define IMAGE_HEIGHT 200
-#define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)
+#ifdef EI_NORDIC
+#include <nrfx_clock.h>
+#endif
 
-uint8_t image_raw[IMAGE_SIZE];
-float image_normalized[IMAGE_SIZE];
+static const float mnist_image[] = {
+    // Example 28x28 grayscale image, normalized between 0.0 - 1.0
+    // Replace this with actual MNIST test image (flattened into 784 floats)
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, ... 784 floats 
+};
 
-bool receive_uart_image(void) {
-    const struct device *uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart0));
-    if (!device_is_ready(uart_dev)) {
-        printk("UART device not ready!\n");
-        return false;
-    }
-
-    uint8_t byte;
-    uint8_t marker1 = 0, marker2 = 0;
-
-    printk("Waiting for image marker...\n");
-
-    // Wait for START_MARKER_1
-    do {
-        while (uart_poll_in(uart_dev, &marker1) < 0) {
-            k_msleep(1);
-        }
-    } while (marker1 != START_MARKER_1);
-
-    // Wait for START_MARKER_2
-    while (uart_poll_in(uart_dev, &marker2) < 0) {
-        k_msleep(1);
-    }
-
-    if (marker2 != START_MARKER_2) {
-        printk("Invalid start marker!\n");
-        return false;
-    }
-
-    printk("Start marker received. Receiving image data...\n");
-
-    for (int i = 0; i < IMAGE_SIZE; i++) {
-        while (uart_poll_in(uart_dev, &image_raw[i]) < 0) {
-            k_msleep(1);
-        }
-    }
-
-    for (int i = 0; i < IMAGE_SIZE; i++) {
-        image_normalized[i] = image_raw[i] / 255.0f;
-    }
-
-    printk("Image received. First 5 normalized pixels: %f, %f, %f, %f, %f\n",
-           image_normalized[0], image_normalized[1],
-           image_normalized[2], image_normalized[3],
-           image_normalized[4]);
-
-    return true;
+int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
+    memcpy(out_ptr, mnist_image + offset, length * sizeof(float));
+    return 0;
 }
 
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
-    printk("UART Image Receiver Initialized\n");
+
+#ifdef CONFIG_SOC_NRF5340_CPUAPP
+    const struct device *clock_dev = DEVICE_DT_GET_ONE(nordic_nrf_clock);
+    if (device_is_ready(clock_dev)) {
+        clock_control_on(clock_dev, CLOCK_CONTROL_NRF_SUBSYS_HF);
+    }
+#endif
+
+    printk("Edge Impulse MNIST digit classification (Zephyr)\n");
+
+    if (sizeof(mnist_image) / sizeof(float) != EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
+        printk("Invalid input size. Expected %d floats, got %u\n",
+               EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, sizeof(mnist_image) / sizeof(float));
+        return 1;
+    }
+
+    ei_impulse_result_t result = { 0 };
 
     while (1) {
-        bool success = receive_uart_image();
-        if (!success) {
-            printk("Failed to receive image.\n");
-        }
-        k_msleep(1000);
+        signal_t features_signal;
+        features_signal.total_length = sizeof(mnist_image) / sizeof(mnist_image[0]);
+        features_signal.get_data = &raw_feature_get_data;
+
+        EI_IMPULSE_ERROR res = run_classifier(&features_signal, &result, false);
+        printk("run_classifier returned: %d\n", res);
+
+        if (res != 0) return 1;
+
+        printk("Predictions (DSP: %d ms, Classification: %d ms, Anomaly: %d ms):\n",
+               result.timing.dsp, result.timing.classification, result.timing.anomaly);
+
+               for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
+                auto bb = result.bounding_boxes[i];
+                if (bb.value == 0) continue; // skip low confidence
+                printk("Found object: '%s' (%.2f%%) at [%d,%d,%d,%d]\n",
+                       bb.label, bb.value * 100,
+                       bb.x, bb.y, bb.width, bb.height);
+            }
+            
+
+#if EI_CLASSIFIER_HAS_ANOMALY == 1
+        printk("    anomaly score: %.3f\n", result.anomaly);
+#endif
+
+        k_msleep(2000);
     }
 }
